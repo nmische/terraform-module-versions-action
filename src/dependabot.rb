@@ -12,11 +12,46 @@ require "dependabot/update_checkers"
 require "dependabot/file_updaters"
 require "dependabot/pull_request_creator"
 require "dependabot/omnibus"
+require "dependabot/terraform/version"
+require "dependabot/terraform/requirement"
+require "dependabot/git_commit_checker"
+require "dependabot/terraform/update_checker"
+
+# WARNING: This is monkey-patch to Dependabot::Terraform::UpdateChecker such
+# that it will use the latest tag as the latest version, ignoring
+# previous tags that may have a higher semantic version
+class Dependabot::Terraform::UpdateChecker
+  def latest_version
+    return latest_tag_as_latest_version_for_git_dependency
+  end
+
+  def up_to_date?
+    return git_commit_checker.current_version == latest_version
+  end
+
+  def can_update?(requirements_to_unlock:)
+    # At present, Terraform's dependency lock file tracks only provider dependencies,
+    # so we do not need to worry about unlocking
+    return git_commit_checker.current_version != latest_version
+  end
+
+  private
+
+  def latest_tag_as_latest_version_for_git_dependency
+    # Always use the latest tag, ignoring any other tags that may have a higher semantic version
+    t = git_commit_checker.allowed_version_tags[-1]
+    version = t.name.match(Dependabot::GitCommitChecker::VERSION_REGEX).named_captures.
+                  fetch("version")
+    return version_class.new(version)
+  end
+
+end
+
 
 $stdout.sync = true
 
 # Utilize the github env variable per default
-repo_name = ENV["GITHUB_REPOSITORY"]
+repo_name = ENV["GITHUB_REPOSITORY"] || ""
 if repo_name.empty?
   print "GITHUB_REPOSITORY needs to be set"
   exit(1)
@@ -31,13 +66,13 @@ if directory.empty?
 end
 
 # Define the target branch
-target_branch = ENV["GITHUB_HEAD_REF"]
+target_branch = ENV["GITHUB_HEAD_REF"] || ""
 if target_branch.empty?
   target_branch=nil
 end
 
 # Token to be used for fetching repository files
-repo_token = ENV["INPUT_TOKEN"]
+repo_token = ENV["INPUT_TOKEN"] || ""
 if repo_token.empty?
   print "A github token needs to be provided"
   exit(1)
@@ -55,7 +90,7 @@ credentials_repository = [
 credentials_dependencies = []
 
 # Token to be used for fetching dependencies from github
-dependency_token = ENV["INPUT_GITHUB_DEPENDENCY_TOKEN"]
+dependency_token = ENV["INPUT_GITHUB_DEPENDENCY_TOKEN"] || ""
 unless dependency_token.empty?
   credentials_dependencies.push(
     {
